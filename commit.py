@@ -12,12 +12,11 @@ class Commit:
         self.date = jsonData['commit']['author']['date'].split('T')[0]
         self.hour,self.minute,_ = jsonData['commit']['author']['date'].split('T')[1].replace('Z','').split(':')
         self.files = [ChangedFile(f) for f in jsonData['files']]  
-        print self.__str__()
 
     def __str__(self):
         fileStr = ''
         for f in self.files:
-            fileStr += ''#f.__str__()+'\n' ignore files in __str__
+            fileStr += ''#f.__str__()+'\n' ignore files 
         return 'Author: %s\nMessage: %s\nSHA: %s\nDate: %s\nHour: %s\nMinute: %s\n%s' % (self.author,self.msg,self.sha,self.date,self.hour,self.minute,fileStr)
 
     '''
@@ -84,17 +83,6 @@ class ChangedFile:
     
     def featureNumLinesDeleted(self):
         return self.numLinesDeleted
-
-
-
-
-
-
-
-
-
-
-
 
 
 

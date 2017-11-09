@@ -39,8 +39,12 @@ if not commitsJson:
 	commitsJson = [getDetailedCommit(sha) for sha in getListCommits()]
 	saveCommits(commitsJson)
 
-commits = []
-for commitJson in commitsJson:
-	commits.append(Commit(commitJson))
+'''
+Convert json to Commit
+'''
+commits = [ Commit(c) for c in commitsJson]
+print commits[0]
+#for commitJson in commitsJson:
+#	commits.append(Commit(commitJson))
 
 #print json.dumps(commits[1], indent=4, sort_keys=True)
