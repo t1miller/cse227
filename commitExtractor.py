@@ -5,21 +5,7 @@ from commit import Commit
 gitClientID = "077392bc8da10af70548" 
 gitClientSecret = "84af78d9b0f9e3ad1936175641dc44e953da8fd5"
 
-def getListCommits():
-	url = 'https://api.github.com/repos/mozilla/gecko-dev/commits' \
-			+"?client_id="+gitClientID+"&client_secret="+gitClientSecret
-	response = requests.get(url).json()
-	shas = []
-	for r in response:
-		shas.append(r['sha'])
-	return shas
 
-def getDetailedCommit(sha):
-	return requests.get('https://api.github.com/repos/mozilla/gecko-dev/commits/'+sha+"?client_id="+gitClientID+"&client_secret="+gitClientSecret).json()
-
-def saveCommits(commits):
-	with open('commits.txt', 'w') as outfile:
-		json.dump(commits, outfile)
 
 def getSavedCommits():
 	try:
@@ -30,21 +16,34 @@ def getSavedCommits():
 		print 'Error loading saved file'
 		return None
 
+def saveCommits(commits):
+	with open('commits.txt', 'w') as outfile:
+		json.dump(commits, outfile)
 
 '''
-Check to see if we have commits saved on disk
+Git API v3 returns 30 commits by default
+100 is the max value
+https://developer.github.com/v3/
 '''
-commitsJson = getSavedCommits()
-if not commitsJson:
-	commitsJson = [getDetailedCommit(sha) for sha in getListCommits()]
-	saveCommits(commitsJson)
+def getCommits(numberOfCommits=100,updateCommitCache=False):
+	commits = []
+	commitsJSON = getSavedCommits()
+	if updateCommitCache or not commitsJSON:
+		url = 'https://api.github.com/repos/mozilla/gecko-dev/commits' \
+				+"?client_id="+gitClientID \
+				+"&client_secret="+gitClientSecret \
+				+"&per_page="+str(numberOfCommits)
+		response = requests.get(url).json()
+		shas = [r['sha'] for r in response]
+		commitsJSON = [getDetailedCommit(sha) for sha in shas]
+		commits = [Commit(c) for c in commitsJSON]
+		saveCommits(commitsJSON)
+	else:
+		commits = [Commit(c) for c in commitsJSON]
+	return commits
 
-'''
-Convert json to Commit
-'''
-commits = [ Commit(c) for c in commitsJson]
-print commits[0]
-#for commitJson in commitsJson:
-#	commits.append(Commit(commitJson))
+def getDetailedCommit(sha):
+	return requests.get('https://api.github.com/repos/mozilla/gecko-dev/commits/'+sha+"?client_id="+gitClientID+"&client_secret="+gitClientSecret).json()
 
-#print json.dumps(commits[1], indent=4, sort_keys=True)
+
+
