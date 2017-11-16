@@ -37,7 +37,7 @@ class Commit:
     '''
     def featureMsg(self):
         bow = collections.defaultdict(int)
-        for word in self.msg.lower():
+        for word in self.msg.lower().split():
             if word.isalnum():
                 bow[word] += 1
         return bow
@@ -160,7 +160,7 @@ class BOWHelper:
     def __init__(self):
         return
 
-    def bowCommit(self,corpusAdd,corpusRemove,commit):
+    def bowCommitSource(self,corpusAdd,corpusRemove,commit):
         #merge all bow for individual files changed in a commit
         addedMerged = defaultdict(int)
         removedMerged = defaultdict(int)
@@ -192,6 +192,13 @@ class BOWHelper:
 
         return sorted(bow.items())
 
+    def bowCommitMsg(self,corpus,commit):
+        bowMsg = commit.featureMsg()
+        bow = defaultdict(int)
+        for word in corpus:
+            bow[word] += bowMsg[word]
+        return sorted(bow.items())
+
     def buildFileNameCorpus(self,commits):
         corpus = set()
         for c in commits:
@@ -201,7 +208,7 @@ class BOWHelper:
                         corpus.add(k)
         return corpus 
 
-    def buildCommitCorpus(self,commits):
+    def buildCommitSourceCorpus(self,commits):
         corpusAdd = set()
         corpusRemove = set()
         for c in commits:
@@ -214,6 +221,13 @@ class BOWHelper:
                     for k,v in bowRemoved.iteritems():
                         corpusRemove.add(k)
         return corpusAdd,corpusRemove
+
+    def buildCommitMsgCorpus(self,commits):
+        corpus = set()
+        for c in commits:
+            for k,v in c.featureMsg().iteritems():
+                corpus.add(k)
+        return corpus
 
 
 
