@@ -12,9 +12,9 @@ import re
 def mergeDicts(x,y):
     z = defaultdict(int)
     for k,v in x.iteritems():
-        z[k] += v
+        z[k] = v
     for k,v in y.iteritems():
-        z[k] += v
+        z[k] = v
     return z
 
 class Commit:
@@ -39,7 +39,7 @@ class Commit:
         bow = collections.defaultdict(int)
         for word in self.msg.lower().split():
             if word.isalnum():
-                bow[word] += 1
+                bow[word] = 1
         return bow
     
     '''
@@ -63,6 +63,15 @@ class Commit:
 
     def getFiles(self):
         return self.files
+
+    def getNumLinesChangedAllFiles(self):
+        changed,added,deleted = 0,0,0
+        for cFile in self.getFiles():
+            changed += cFile.featureNumLinesChanged()
+            added += cFile.featureNumLinesAdded()
+            deleted += cFile.featureNumLinesDeleted()
+        return changed,added,deleted
+
 
 class ChangedFile:
 
@@ -116,7 +125,7 @@ class ChangedFile:
 
         for operator in operators:
             if line.count(operator) > 0:
-                bowPlus[operator] = line.count(operator)
+                bowPlus[operator] = 1
         strippedString = ''
         for character in line:
             if character not in string.punctuation:
@@ -124,7 +133,7 @@ class ChangedFile:
             else:
                 strippedString += ' '
         for word in strippedString.split():
-            bowPlus[word] += 1
+            bowPlus[word] = 1
         return bowPlus
 
     '''
@@ -136,7 +145,7 @@ class ChangedFile:
         test = defaultdict(int)
         for term in re.findall('[A-Z][^A-Z]*', self.filename):
             for t in re.split(r'[-|_|/\s]\s*', term):
-                bow[t] += 1
+                bow[t] = 1
         return bow
 
     def featureNumLinesChanged(self):
@@ -174,9 +183,9 @@ class BOWHelper:
         bowAdded = defaultdict(int)
         bowRemoved = defaultdict(int)
         for word in corpusAdd:
-            bowAdded[word] += addedMerged[word]
+            bowAdded[word] = addedMerged[word]
         for word in corpusRemove:
-            bowRemoved[word] += removedMerged[word]
+            bowRemoved[word] = removedMerged[word]
 
         return sorted(bowAdded.items()),sorted(bowRemoved.items())
 
@@ -188,7 +197,7 @@ class BOWHelper:
 
         bow = defaultdict(int)
         for word in corpus:
-            bow[word] += bowMerged[word]
+            bow[word] = bowMerged[word]
 
         return sorted(bow.items())
 

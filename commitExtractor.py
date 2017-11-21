@@ -16,9 +16,6 @@ def getSavedCommits():
 		print 'Error loading saved file'
 		return None
 
-def saveCommits(commits):
-	with open('commits.txt', 'w') as outfile:
-		json.dump(commits, outfile)
 
 '''
 Git API v3 returns 30 commits by default
