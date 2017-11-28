@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections import OrderedDict
 from copy import deepcopy
 import re
+from unidiff import PatchSet
 
 #utility method
 def mergeDicts(x,y):
@@ -19,17 +20,51 @@ def mergeDicts(x,y):
 
 class Commit:
 
-    def __init__(self,jsonData):
-        self.author = jsonData['commit']['author']['name']
-        self.msg = jsonData['commit']['message']
-        self.sha = jsonData['commit']['tree']['sha']
-        self.date = jsonData['commit']['author']['date'].split('T')[0]
-        self.hour,self.minute,_ = jsonData['commit']['author']['date'].split('T')[1].replace('Z','').split(':')
-        self.files = [ChangedFile(f) for f in jsonData['files']] 
+    def __init__(self,author,msg,sha,date,hour,minute,diff,isBuggy):
+        self.author = author
+        self.msg = msg
+        self.sha = sha
+        self.date = date
+        self.hour = hour
+        self.minute = minute
+        self.isBuggy = isBuggy
+        self.filenames,self.sourceAdded,self.sourceRemoved,self.sourceCurrent,self.changes = self.parseDiff(diff)
 
     def __str__(self):
-        fileCount = len(self.files)
-        return ('Author: %s\nMessage: %s\nSHA: %s\nDate: %s\nHour: %s\nMinute: %s\n#Files Changed:%s' % (self.author,self.msg,self.sha,self.date,self.hour,self.minute,fileCount)).encode('utf8')
+        return ('Author: %s\nMessage: %s\nSHA: %s\nDate: %s\nHour:%s\n \
+                Minute: %s\n#Files Changed:%s\nisBuggy:%s\nChanges:%s\n'
+                % (self.author,self.msg,self.sha,self.date,self.hour,self.minute,len(self.filenames),
+                self.isBuggy,self.changes)).encode('utf8')
+
+    def bowSourceCode(self,lines):
+        bow = defaultdict(int)
+        for line in lines:
+            bow = mergeDicts(self.parsePatchHelper(line),bow)
+        return bow
+
+    def parseDiff(self,diff):
+        filenames = []
+        sourceAdded = set()
+        sourceRemoved = set()
+        sourceCurrent = set()
+        changes = 0
+        diff = json.loads(diff).split('\n')[1:]
+        patchSet = PatchSet(diff,encoding='utf-8')
+        for patch in patchSet:
+            changes += patch.removed + patch.added  
+            filenames.append(patch.path)
+            for hunk in patch:
+                for line in hunk.source:
+                    if line[0] == '-':
+                        sourceRemoved.add(line[1:].lower())
+                for line in hunk.target:
+                    if line[0] == '+':
+                        sourceAdded.add(line[1:].lower())
+                    sourceCurrent.add(line)
+        added = self.bowSourceCode(sourceAdded)
+        removed = self.bowSourceCode(sourceRemoved)
+        current = self.bowSourceCode(sourceCurrent)
+        return filenames,added,removed,current,changes
 
     '''
     Feature extraction from commit messsage using Bag of Words aproach. 
@@ -61,68 +96,16 @@ class Commit:
         hour[int(self.hour)] = 1
         return hour
 
-    def getFiles(self):
-        return self.files
-
-    def getNumLinesChangedAllFiles(self):
-        changed,added,deleted = 0,0,0
-        for cFile in self.getFiles():
-            changed += cFile.featureNumLinesChanged()
-            added += cFile.featureNumLinesAdded()
-            deleted += cFile.featureNumLinesDeleted()
-        return changed,added,deleted
-
-
-class ChangedFile:
-
-
-    def __init__(self,jsonFile):
-        self.filename = jsonFile['filename']
-        self.numLinesAdded = jsonFile['additions']
-        self.numLinesDeleted = jsonFile['deletions']
-        self.numLinesChanged = jsonFile['changes']
-        self.rawURL = jsonFile['raw_url']
-        self.patch = self.getPatch(jsonFile)
-        #self.featureSourceCode()
-        #print json.dumps(jsonFile, indent=4, sort_keys=True)
-
-
-    def __str__(self):
-        return ('Filename: %s\nLines Added: %s\nLines Deleted: %s\nLines Changed: %s\nRaw URL: %s' % (self.filename,self.numLinesAdded,self.numLinesDeleted,self.numLinesChanged,self.rawURL)).encode('utf8')
-    
-    def getPatch(self,jsonFile):
-        try:
-            patch = jsonFile['patch']
-        except:
-            patch = None
-        return patch
-
-    '''
-    Create BOW+ features from the source code 
-    '''
-    def featureSourceCode(self):
-        if self.patch == None:
-            return
-
-        bowAdded = collections.defaultdict(int)
-        bowRemoved = collections.defaultdict(int)
-
-        diff = [x for x in whatthepatch.parse_patch(self.patch)]
-        sourceLines = diff[0][2].split('\n')
-        for line in sourceLines:
-            line = line.lower()
-            if len(line) > 1 :
-                if line[0] == '+':
-                    bowAdded = mergeDicts(self.parsePatchHelper(line[1:]),bowAdded)
-                elif line[0] == '-':
-                    bowRemoved = mergeDicts(self.parsePatchHelper(line[1:]),bowRemoved)
-        #print list(reversed(sorted(bowAdded,key=bowAdded.__getitem__)))
-        return bowAdded,bowRemoved
+    def featureFilenames(self):
+        bow = collections.defaultdict(int)
+        for filename in self.filenames:
+            for term in re.split(r'[-/._]+',filename):
+                bow[term.lower()] = 1
+        return bow
 
     def parsePatchHelper(self,line):
-        operators = ['==','!=','++','--','&&','||','*=','/=','+=','-=','<','>','?']
+        operators = ['==','!=','++','--','&&','||','*=','/=','+=','-=','<','>','?','[]','//']
         bowPlus = collections.defaultdict(int)
-
         for operator in operators:
             if line.count(operator) > 0:
                 bowPlus[operator] = 1
@@ -136,107 +119,124 @@ class ChangedFile:
             bowPlus[word] = 1
         return bowPlus
 
-    '''
-    BOW++ on filename
-    TODO handle camelCase and acronyms 
-    '''
-    def featureFilename(self):
-        bow = collections.defaultdict(int)
-        test = defaultdict(int)
-        for term in re.findall('[A-Z][^A-Z]*', self.filename):
-            for t in re.split(r'[-|_|/\s]\s*', term):
-                bow[t] = 1
-        return bow
-
-    def featureNumLinesChanged(self):
-        return self.numLinesChanged
-    
-    def featureNumLinesAdded(self):
-        return self.numLinesAdded
-    
-    def featureNumLinesDeleted(self):
-        return self.numLinesDeleted
-
-#TODO Bug class
-class Bug:    
-    def __init__(self):
-        return
-        #Feature length of time that bug was in code
-        #Feature buggy line source BOW+ 
-
 class BOWHelper:
     
     def __init__(self):
         return
 
-    def bowCommitSource(self,corpusAdd,corpusRemove,commit):
-        #merge all bow for individual files changed in a commit
-        addedMerged = defaultdict(int)
-        removedMerged = defaultdict(int)
-        for f in commit.getFiles():
-            fileBow = f.featureSourceCode()
-            if fileBow:
-                added,removed = fileBow
-                addedMerged = mergeDicts(addedMerged,added)
-                removedMerged = mergeDicts(removedMerged,added)
-        
-        bowAdded = defaultdict(int)
-        bowRemoved = defaultdict(int)
-        for word in corpusAdd:
-            bowAdded[word] = addedMerged[word]
-        for word in corpusRemove:
-            bowRemoved[word] = removedMerged[word]
+    def bowAuthor(self,authorCorpus,commit):
+        f = []
+        index = 0
+        for word in authorCorpus:
+            if word == commit.author:
+                f.append(1)
+                f += [0]*(len(authorCorpus)-index)
+                break
+            f.append(0)
+            index += 1
+        return f
 
-        return sorted(bowAdded.items()),sorted(bowRemoved.items())
+    def bowCommitSource(self,corpusAdd,corpusRemove,corpusCurrent,commit):
+        matched = 0
+        add = []
+        rem = []
+        cur = []
+        for word in corpusAdd:
+            if commit.sourceAdded[word]:
+                add.append(1)
+                matched += 1
+                if len(commit.sourceAdded) == matched:
+                    add += [0]*(len(corpusAdd)-matched)
+                    break
+            else:
+                add.append(0)
+        matched = 0
+        for word in corpusRemove:
+            if commit.sourceRemoved[word]:
+                rem.append(1)
+                matched += 1
+                if len(commit.sourceRemoved) == matched:
+                    rem += [0]*(len(corpusRemove)-matched)
+                    break
+            else:
+                rem.append(0)
+
+        matched = 0
+        for word in corpusCurrent:
+            if commit.sourceCurrent[word]:
+                cur.append(1)
+                matched += 1
+                if len(commit.sourceCurrent) == matched:
+                    cur += [0]*(len(corpusCurrent)-matched)
+                    break
+            else:
+                rem.append(0)
+        return add,rem,cur#sorted(bowAdded.items()),sorted(bowRemoved.items()),sorted(bowCurrent.items())
 
     def bowFilename(self,corpus,commit):
-        bowMerged = defaultdict(int)
-        for f in commit.getFiles():
-            if f.featureFilename():
-                bowMerged = mergeDicts(bowMerged,f.featureFilename())
-
-        bow = defaultdict(int)
+        bowfiles = commit.featureFilenames()
+        f = []
+        matched = 0
         for word in corpus:
-            bow[word] = bowMerged[word]
-
-        return sorted(bow.items())
+            if bowfiles[word]:
+                f.append(1)
+                matched += 1
+                if len(bowfiles) == matched:
+                    f += [0]*(len(corpus)-matched)
+                    break
+            else:
+                f.append(0)
+        return f
 
     def bowCommitMsg(self,corpus,commit):
         bowMsg = commit.featureMsg()
-        bow = defaultdict(int)
+        f = []
+        matched = 0
         for word in corpus:
-            bow[word] += bowMsg[word]
-        return sorted(bow.items())
+            if bowMsg[word]:
+                f.append(1)
+                matched += 1
+                if len(bowMsg) == matched:
+                    f += [0]*(len(corpus)-matched)
+                    break
+            else:
+                f.append(0)
+        return f
 
     def buildFileNameCorpus(self,commits):
         corpus = set()
+        bowMerged = defaultdict(int)
         for c in commits:
-            for f in c.getFiles():
-                if f.featureFilename():
-                    for k,v in f.featureFilename().iteritems():
-                        corpus.add(k)
-        return corpus 
+            bowMerged = mergeDicts(bowMerged,c.featureFilenames())
+            for k,v in c.featureFilenames().iteritems():
+                corpus.add(k)
+        return sorted(corpus) 
 
     def buildCommitSourceCorpus(self,commits):
         corpusAdd = set()
         corpusRemove = set()
+        corpusCurrent = set()
         for c in commits:
-            for f in c.getFiles():
-                bow = f.featureSourceCode()
-                if bow:
-                    bowAdded,bowRemoved = bow
-                    for k,v in bowAdded.iteritems():
-                        corpusAdd.add(k)
-                    for k,v in bowRemoved.iteritems():
-                        corpusRemove.add(k)
-        return corpusAdd,corpusRemove
+            for k,v in c.sourceAdded.iteritems():
+                corpusAdd.add(k)
+            for k,v in c.sourceRemoved.iteritems():
+                corpusRemove.add(k)
+            for k,v in c.sourceCurrent.iteritems():
+                corpusCurrent.add(k)
+        return sorted(corpusAdd),sorted(corpusRemove),sorted(corpusCurrent)
 
     def buildCommitMsgCorpus(self,commits):
         corpus = set()
         for c in commits:
             for k,v in c.featureMsg().iteritems():
                 corpus.add(k)
-        return corpus
+        return sorted(corpus)
+
+    def buildAuthorCorpus(self,commits):
+        corpus = set()
+        for c in commits:
+            corpus.add(c.author)
+        return sorted(corpus)
 
 
 
