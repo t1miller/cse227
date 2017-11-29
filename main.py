@@ -2,7 +2,6 @@ import commitExtractor as ce
 from commit import Commit
 from commit import BOWHelper
 from collections import defaultdict
-from collections import OrderedDict
 import operator
 from sklearn import svm
 from sklearn.neighbors import NearestNeighbors
@@ -16,25 +15,29 @@ reload(sys)
 sys.setdefaultencoding('utf-8')
 
 
+def loadCommits(path):
+    data = []
+    for i,filename in enumerate(sorted(os.listdir(path))):
+        data.append(json.load(open(path+filename)))
+        if i % 10000 == 0:
+            print 'loaded ',i,' commits'
+    return data
 
-def parseCommits(buggyHash,path):
+
+def parseCommitData(buggyHashes,data):
     commits = []
-    i = 0
-    for filename in os.listdir(path):
-        data = json.load(open(path+filename))
-        sha = data['sha'][1:8]#only first 7 char of hash
-        author = data['commit']['author']['name']
-        msg = data['commit']['message']
-        date = data['commit']['author']['date'].split('T')[0].replace("\"","")
-        hour,minute,_,_ = data['commit']['author']['date'].split('T')[1].replace('Z','').split(':')
-        diff = data['diff']
-        isBuggy = buggyHash[sha]
+    for i,d in enumerate(data):
+        sha = d['sha'][1:8]#only first 7 char of hash
+        author = d['commit']['author']['name']
+        msg = d['commit']['message']
+        date = d['commit']['author']['date'].split('T')[0].replace("\"","")
+        hour,minute,_,_ = d['commit']['author']['date'].split('T')[1].replace('Z','').split(':')
+        diff = d['diff']
+        isBuggy = buggyHashes[sha]
         commits.append(Commit(author,msg,sha,date,hour,minute,diff,isBuggy))
         if i % 1000 == 0:
             print 'parsed ',i,' commits'
-        if i == 1000:
-            return commits
-        i += 1
+    return commits
 
 def parseBugs(path):
     buggyHash = defaultdict(int)
@@ -45,68 +48,56 @@ def parseBugs(path):
     return buggyHash
 
 
-'''
-def buggiestInterval(commits,intervalLength=1000):
-    bestInterval = []
-    bestBugCount = float('-inf')
-    for i in range(len(commits)/intervalLength):
-        interval = commits[i*1000:i*1000+1000]
-        buggyCount = sum([c.isBuggy for c in interval])
-        print 'buggyCount:',buggyCount,', commits[',i*1000,':',i*1000+1000,']'
-        if buggyCount > bestBugCount:
-            bestBugCount = buggyCount
-            bestInterval = interval
-    return bestInterval
-'''
+buggyHashes = parseBugs('./data/bug_data/')
+commitData = loadCommits('./data/commit_data/')
+SAMPLE_SIZE = 3000
+random.seed(23)
+commitDataSample = random.sample(commitData,SAMPLE_SIZE)
+commits = parseCommitData(buggyHashes,commitDataSample)
 
-print 'parsing commits'
-buggyHash = parseBugs('./data/bug_data/')
-commits = parseCommits(buggyHash,'./data/commit_data/')
-#commits = buggiestInterval(commits)
-
-
-bowhelper = BOWHelper()
 #build corpi
+bowhelper = BOWHelper()
 corpusAdd,corpusRemove,corpusCurrent = bowhelper.buildCommitSourceCorpus(commits)
 corpusFilename = bowhelper.buildFileNameCorpus(commits)
 corpusMsg = bowhelper.buildCommitMsgCorpus(commits)
 corpusAuthor = bowhelper.buildAuthorCorpus(commits)
 
 
-for corp in corpusCurrent:
-    print corp
-
-def featureBuilder(corpusMsg,corpusFilename,corpusAdd,corpusRemove,corpusAuthor,commit):
+def feature(corpusMsg,corpusFilename,corpusAdd,corpusRemove,corpusAuthor,commit):
     f = []
     f.append(1)
     f += commit.featureHour()
     f += commit.featureDate()
-    f.append(commit.changes)
+    f.append(commit.numLinesChanged) 
     f.append(len(commit.filenames))
-    f += bowhelper.bowAuthor(corpusAuthor,commit)
-    f += bowhelper.bowFilename(corpusFilename,commit)
-    f += bowhelper.bowCommitMsg(corpusMsg,commit)
-    bowAdded,bowRemoved,bowCurrent = bowhelper.bowCommitSource(corpusAdd,corpusRemove,corpusCurrent,commit)
+    f += bowhelper.featureAuthor(corpusAuthor,commit)
+    f += bowhelper.featureFilename(corpusFilename,commit)
+    f += bowhelper.featureCommitMsg(corpusMsg,commit)
+    bowAdded,bowRemoved,bowCurrent = bowhelper.featureCommitSource(corpusAdd,corpusRemove,corpusCurrent,commit)
     f += bowAdded
     f += bowRemoved
     f += bowCurrent
     return f
 
-#print featureBuilder(corpusMsg,corpusFilename,corpusAdd,corpusRemove,corpusAuthor,commits[0])
+#print feature(corpusMsg,corpusFilename,corpusAdd,corpusRemove,corpusAuthor,commits[0])
 
-print 'builing feature vectors'
+print 'building feature vectors'
 x = []
 for i,c in enumerate(commits):
-    x.append(featureBuilder(corpusMsg,corpusFilename,corpusAdd,corpusRemove,corpusAuthor,c))
+    x.append(feature(corpusMsg,corpusFilename,corpusAdd,corpusRemove,corpusAuthor,c))
     if i % 100 == 0:
         print 'completed ',i,' features'
 
-x_train = x[:len(x)/2]
-x_test = x[len(x)/2:]
-print 'builing labels'
+
+x_train = x[:len(x)/3]
+x_test = x[len(x)/3:2*len(x)/3]
+x_valid = x[2*len(x)/3:]
+print 'building labels'
 y = [int(c.isBuggy) for c in commits]
-y_train = y[:len(y)/2]
-y_test = y[len(y)/2:]
+y_train = y[:len(y)/3]
+y_test = y[len(x)/3:2*len(x)/3]
+y_valid = y[2*len(y)/3:]
+
 
 def accuracy(p,y):
     tp,tn,fp,fn = 0.0,0.0,0.0,0.0
@@ -132,14 +123,28 @@ def accuracy(p,y):
 
 clf = svm.LinearSVC(C=.1,class_weight='balanced') # Linear SVM is faster
 clf.fit(x_train, y_train)
+
+#Test set 
 predictions = [int(x) for x in clf.predict(x_test)]
 tp,tn,fp,fn,acc,buggyRecall,buggyPrecision,buggyF1,cleanRecall,cleanPrecison,cleanF1 = accuracy(predictions,y_test)
+print 'test set'
 print 'accuracy:',acc
 print 'buggy F1:',buggyF1,'buggy recall:',buggyRecall,'buggy precision:',buggyPrecision
 print 'clean F1:',cleanF1,'clean recall:',cleanRecall,'clean precision:',cleanPrecison
 print 'tp:',tp,'tn:',tn,'fp:',fp,'fn:',fn
 
-'''
+#Validation set
+predictions = [int(x) for x in clf.predict(x_valid)]
+tp,tn,fp,fn,acc,buggyRecall,buggyPrecision,buggyF1,cleanRecall,cleanPrecison,cleanF1 = accuracy(predictions,y_valid)
+print 'valid set'
+print 'accuracy:',acc
+print 'buggy F1:',buggyF1,'buggy recall:',buggyRecall,'buggy precision:',buggyPrecision
+print 'clean F1:',cleanF1,'clean recall:',cleanRecall,'clean precision:',cleanPrecison
+print 'tp:',tp,'tn:',tn,'fp:',fp,'fn:',fn
+
+
+
+''' This is for tuning SVM params 
 bestAcc = 0
 bestCLF = None
 for c in 0.01, 0.1, 1, 10, 100:

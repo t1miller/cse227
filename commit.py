@@ -8,6 +8,8 @@ from collections import OrderedDict
 from copy import deepcopy
 import re
 from unidiff import PatchSet
+from nltk.stem.porter import PorterStemmer
+
 
 #utility method
 def mergeDicts(x,y):
@@ -28,7 +30,7 @@ class Commit:
         self.hour = hour
         self.minute = minute
         self.isBuggy = isBuggy
-        self.filenames,self.sourceAdded,self.sourceRemoved,self.sourceCurrent,self.changes = self.parseDiff(diff)
+        self.filenames,self.sourceAdded,self.sourceRemoved,self.sourceCurrent,self.numLinesChanged = self.parseDiff(diff)
 
     def __str__(self):
         return ('Author: %s\nMessage: %s\nSHA: %s\nDate: %s\nHour:%s\n \
@@ -39,38 +41,40 @@ class Commit:
     def bowSourceCode(self,lines):
         bow = defaultdict(int)
         for line in lines:
-            bow = mergeDicts(self.parsePatchHelper(line),bow)
-        return bow
+            for term in self.parsePatchHelper(line):
+                bow[term] = 1
+        return bow 
 
     def parseDiff(self,diff):
         filenames = []
         sourceAdded = set()
         sourceRemoved = set()
         sourceCurrent = set()
-        changes = 0
+        numLinesChanged = 0
         diff = json.loads(diff).split('\n')[1:]
         patchSet = PatchSet(diff,encoding='utf-8')
         for patch in patchSet:
-            changes += patch.removed + patch.added  
             filenames.append(patch.path)
             for hunk in patch:
                 for line in hunk.source:
                     if line[0] == '-':
-                        sourceRemoved.add(line[1:].lower())
+                        sourceRemoved.add(line[1:])
+                        numLinesChanged += 1
                 for line in hunk.target:
                     if line[0] == '+':
-                        sourceAdded.add(line[1:].lower())
+                        sourceAdded.add(line[1:])
+                        numLinesChanged += 1
                     sourceCurrent.add(line)
         added = self.bowSourceCode(sourceAdded)
         removed = self.bowSourceCode(sourceRemoved)
         current = self.bowSourceCode(sourceCurrent)
-        return filenames,added,removed,current,changes
+        return filenames,added,removed,current,numLinesChanged
 
     '''
     Feature extraction from commit messsage using Bag of Words aproach. 
     All words with non alphanumeric characters are ignored.
     '''
-    def featureMsg(self):
+    def bowMSG(self):
         bow = collections.defaultdict(int)
         for word in self.msg.lower().split():
             if word.isalnum():
@@ -96,119 +100,78 @@ class Commit:
         hour[int(self.hour)] = 1
         return hour
 
-    def featureFilenames(self):
+    def bowFilenames(self):
         bow = collections.defaultdict(int)
         for filename in self.filenames:
             for term in re.split(r'[-/._]+',filename):
-                bow[term.lower()] = 1
+                for hump in self.camelCase(term):
+                    bow[hump.lower()] = 1
         return bow
 
     def parsePatchHelper(self,line):
         operators = ['==','!=','++','--','&&','||','*=','/=','+=','-=','<','>','?','[]','//']
-        bowPlus = collections.defaultdict(int)
+        wordDict = collections.defaultdict(int)
         for operator in operators:
-            if line.count(operator) > 0:
-                bowPlus[operator] = 1
-        strippedString = ''
+            if line.find(operator) != -1:
+                wordDict[operator] = 1
+
+        stripped = ''
         for character in line:
             if character not in string.punctuation:
-                strippedString += character
+                stripped += character
             else:
-                strippedString += ' '
-        for word in strippedString.split():
-            bowPlus[word] = 1
-        return bowPlus
+                stripped += ' '
+
+        for word in stripped.split():
+            wordDict[word.lower()] = 1
+        return wordDict
+
+    def camelCase(self,line):
+        words = set()
+        word = ''
+        i = 0
+        while(i < len(line)):
+            if line[i].isupper() and i != 0:
+                words.add(word)
+                word = ''
+                while(i < len(line) and line[i].isupper()): #find acronyms
+                    word += line[i]
+                    i += 1
+            else:
+                word += line[i]
+                i += 1
+        words.add(word)
+        return words
 
 class BOWHelper:
     
     def __init__(self):
         return
 
-    def bowAuthor(self,authorCorpus,commit):
-        f = []
-        index = 0
-        for word in authorCorpus:
-            if word == commit.author:
-                f.append(1)
-                f += [0]*(len(authorCorpus)-index)
-                break
-            f.append(0)
-            index += 1
+    def featureAuthor(self,authorCorpus,commit):
+        f = [word == commit.author for word in authorCorpus] 
         return f
 
-    def bowCommitSource(self,corpusAdd,corpusRemove,corpusCurrent,commit):
-        matched = 0
-        add = []
-        rem = []
-        cur = []
-        for word in corpusAdd:
-            if commit.sourceAdded[word]:
-                add.append(1)
-                matched += 1
-                if len(commit.sourceAdded) == matched:
-                    add += [0]*(len(corpusAdd)-matched)
-                    break
-            else:
-                add.append(0)
-        matched = 0
-        for word in corpusRemove:
-            if commit.sourceRemoved[word]:
-                rem.append(1)
-                matched += 1
-                if len(commit.sourceRemoved) == matched:
-                    rem += [0]*(len(corpusRemove)-matched)
-                    break
-            else:
-                rem.append(0)
+    def featureCommitSource(self,corpusAdd,corpusRemove,corpusCurrent,commit):
+        add = [commit.sourceAdded[word] for word in corpusAdd]
+        rem = [commit.sourceRemoved[word] for word in corpusRemove]
+        curr = [commit.sourceCurrent[word] for word in corpusCurrent]
+        return add,rem,curr
 
-        matched = 0
-        for word in corpusCurrent:
-            if commit.sourceCurrent[word]:
-                cur.append(1)
-                matched += 1
-                if len(commit.sourceCurrent) == matched:
-                    cur += [0]*(len(corpusCurrent)-matched)
-                    break
-            else:
-                rem.append(0)
-        return add,rem,cur#sorted(bowAdded.items()),sorted(bowRemoved.items()),sorted(bowCurrent.items())
-
-    def bowFilename(self,corpus,commit):
-        bowfiles = commit.featureFilenames()
-        f = []
-        matched = 0
-        for word in corpus:
-            if bowfiles[word]:
-                f.append(1)
-                matched += 1
-                if len(bowfiles) == matched:
-                    f += [0]*(len(corpus)-matched)
-                    break
-            else:
-                f.append(0)
+    def featureFilename(self,corpus,commit):
+        bowfiles = commit.bowFilenames()
+        f = [bowfiles[word] for word in corpus]
         return f
 
-    def bowCommitMsg(self,corpus,commit):
-        bowMsg = commit.featureMsg()
-        f = []
-        matched = 0
-        for word in corpus:
-            if bowMsg[word]:
-                f.append(1)
-                matched += 1
-                if len(bowMsg) == matched:
-                    f += [0]*(len(corpus)-matched)
-                    break
-            else:
-                f.append(0)
+    def featureCommitMsg(self,corpus,commit):
+        bowMsg = commit.bowMSG()
+        f = [bowMsg[word] for word in corpus]
         return f
 
     def buildFileNameCorpus(self,commits):
         corpus = set()
-        bowMerged = defaultdict(int)
         for c in commits:
-            bowMerged = mergeDicts(bowMerged,c.featureFilenames())
-            for k,v in c.featureFilenames().iteritems():
+            for k,v in c.bowFilenames().iteritems():
                 corpus.add(k)
         return sorted(corpus) 
 
@@ -228,7 +191,7 @@ class BOWHelper:
     def buildCommitMsgCorpus(self,commits):
         corpus = set()
         for c in commits:
-            for k,v in c.featureMsg().iteritems():
+            for k,v in c.bowMSG().iteritems():
                 corpus.add(k)
         return sorted(corpus)
 
